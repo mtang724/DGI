@@ -6,6 +6,17 @@ from scipy.sparse.linalg.eigen.arpack import eigsh
 import sys
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+import logging
+from functools import lru_cache
+
+import torch
+from torch.utils.data import DataLoader
+from torch.utils.data import Dataset
+from torch.utils.data.sampler import SubsetRandomSampler
+
+
 
 def parse_skipgram(fname):
     with open(fname) as f:
@@ -209,3 +220,143 @@ def sparse_mx_to_torch_sparse_tensor(sparse_mx):
     values = torch.from_numpy(sparse_mx.data)
     shape = torch.Size(sparse_mx.shape)
     return torch.sparse.FloatTensor(indices, values, shape)
+
+
+def load_synthetic_data(dataset):
+    fh = open("{}.edgelist".format(dataset), "rb")
+    G = nx.read_edgelist(fh)
+    degrees = [val for (node, val) in G.degree()]
+    # g = dgl.from_networkx(G)
+    one_hot_feature = F.one_hot(torch.IntTensor(degrees).to(torch.int64))
+    print(one_hot_feature.shape)
+    A = nx.adjacency_matrix(G)
+    feature = sp.csr_matrix(one_hot_feature.to(torch.float).numpy())
+    return A, feature
+
+def _sample_mask(idx, l):
+    """Create mask."""
+    mask = np.zeros(l)
+    mask[idx] = 1
+    return mask
+
+def load_real_data(dataset):
+    # load the data: x, tx, allx, graph
+    names = ['x', 'tx', 'allx', 'graph', 'ally', 'ty', 'y']
+    objects = []
+    for i in range(len(names)):
+        with open("data/ind.{}.{}".format(dataset, names[i]), 'rb') as f:
+            if sys.version_info > (3, 0):
+                objects.append(pkl.load(f, encoding='latin1'))
+            else:
+                objects.append(pkl.load(f))
+    x, tx, allx, graph, ally, ty, y = tuple(objects)
+    test_idx_reorder = parse_index_file("data/ind.{}.test.index".format(dataset))
+    test_idx_range = np.sort(test_idx_reorder)
+
+    if dataset == 'citeseer':
+        # Fix citeseer dataset (there are some isolated nodes in the graph)
+        # Find isolated nodes, add them as zero-vecs into the right position
+        test_idx_range_full = range(min(test_idx_reorder), max(test_idx_reorder) + 1)
+        tx_extended = sp.lil_matrix((len(test_idx_range_full), x.shape[1]))
+        tx_extended[test_idx_range - min(test_idx_range), :] = tx
+        tx = tx_extended
+        ty_extended = np.zeros((len(test_idx_range_full), y.shape[1]))
+        ty_extended[test_idx_range - min(test_idx_range), :] = ty
+        ty = ty_extended
+
+    features = sp.vstack((allx, tx)).tolil()
+    features[test_idx_reorder, :] = features[test_idx_range, :]
+    adj = nx.adjacency_matrix(nx.from_dict_of_lists(graph))
+
+    onehot_labels = np.vstack((ally, ty))
+    onehot_labels[test_idx_reorder, :] = onehot_labels[test_idx_range, :]
+    labels = np.argmax(onehot_labels, 1)
+
+    idx_test = test_idx_range.tolist()
+    idx_train = range(len(y))
+    idx_val = range(len(y), len(y) + 500)
+
+    train_mask = _sample_mask(idx_train, labels.shape[0])
+    val_mask = _sample_mask(idx_val, labels.shape[0])
+    test_mask = _sample_mask(idx_test, labels.shape[0])
+
+    return adj, features, labels, train_mask, val_mask, test_mask
+
+class DataSplit:
+
+    def __init__(self, dataset, test_train_split=0.8, val_train_split=0.2, shuffle=True):
+        self.dataset = dataset
+
+        dataset_size = len(dataset)
+        self.indices = list(range(dataset_size))
+        test_split = int(np.floor(test_train_split * dataset_size))
+
+        if shuffle:
+            np.random.shuffle(self.indices)
+
+        train_indices, self.test_indices = self.indices[:test_split], self.indices[test_split:]
+        train_size = len(train_indices)
+        validation_split = int(np.floor((1 - val_train_split) * train_size))
+
+        self.train_indices, self.val_indices = train_indices[ : validation_split], train_indices[validation_split:]
+
+        self.train_sampler = SubsetRandomSampler(self.train_indices)
+        self.val_sampler = SubsetRandomSampler(self.val_indices)
+        self.test_sampler = SubsetRandomSampler(self.test_indices)
+
+    def get_train_split_point(self):
+        return len(self.train_sampler) + len(self.val_indices)
+
+    def get_validation_split_point(self):
+        return len(self.train_sampler)
+
+    @lru_cache(maxsize=4)
+    def get_split(self, batch_size=50, num_workers=4):
+        logging.debug('Initializing train-validation-test dataloaders')
+        self.train_loader = self.get_train_loader(batch_size=batch_size, num_workers=num_workers)
+        self.val_loader = self.get_validation_loader(batch_size=batch_size, num_workers=num_workers)
+        self.test_loader = self.get_test_loader(batch_size=batch_size, num_workers=num_workers)
+        return self.train_loader, self.val_loader, self.test_loader
+
+    @lru_cache(maxsize=4)
+    def get_train_loader(self, batch_size=50, num_workers=4):
+        logging.debug('Initializing train dataloader')
+        self.train_loader = torch.utils.data.DataLoader(self.dataset, batch_size=batch_size, sampler=self.train_sampler, shuffle=False, num_workers=num_workers)
+        return self.train_loader
+
+    @lru_cache(maxsize=4)
+    def get_validation_loader(self, batch_size=50, num_workers=4):
+        logging.debug('Initializing validation dataloader')
+        self.val_loader = torch.utils.data.DataLoader(self.dataset, batch_size=batch_size, sampler=self.val_sampler, shuffle=False, num_workers=num_workers)
+        return self.val_loader
+
+    @lru_cache(maxsize=4)
+    def get_test_loader(self, batch_size=50, num_workers=4):
+        logging.debug('Initializing test dataloader')
+        self.test_loader = torch.utils.data.DataLoader(self.dataset, batch_size=batch_size, sampler=self.test_sampler, shuffle=False, num_workers=num_workers)
+        return self.test_loader
+
+def read_real_datasets(datasets):
+    edge_path = "new_data/{}/out1_graph_edges.txt".format(datasets)
+    node_feature_path = "new_data/{}/out1_node_feature_label.txt".format(datasets)
+    with open(edge_path) as edge_file:
+        edge_file_lines = edge_file.readlines()
+        G = nx.parse_edgelist(edge_file_lines[1:], nodetype=int)
+        # g = dgl.from_networkx(G)
+        A = nx.adjacency_matrix(G)
+    with open(node_feature_path) as node_feature_file:
+        node_lines = node_feature_file.readlines()[1:]
+        feature_list = []
+        labels = []
+        for node_line in node_lines:
+            node_id, feature, label = node_line.split("\t")
+            labels.append(int(label))
+            features = feature.split(",")
+            feature_list.append([float(feature) for feature in features])
+        feature_array = np.array(feature_list)
+        features = torch.from_numpy(feature_array)
+        features = sp.csr_matrix(features)
+        # g.ndata['attr'] = features.float()
+        labels = np.array(labels)
+        labels = torch.FloatTensor(labels).long()
+    return A, features, labels
