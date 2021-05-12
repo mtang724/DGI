@@ -173,7 +173,7 @@ def train_real_datasets(emb, node_labels):
     print((correct / total).item())
     return (correct / total).item()
 
-dataset = 'pubmed'
+dataset = 'cora'
 
 # training params
 batch_size = 1
