@@ -223,15 +223,45 @@ def sparse_mx_to_torch_sparse_tensor(sparse_mx):
 
 
 def load_synthetic_data(dataset):
-    fh = open("{}.edgelist".format(dataset), "rb")
+    fh = open("C://Users/Ming/Desktop/DGI/synthetic/{}.edgelist".format(dataset), "rb")
     G = nx.read_edgelist(fh)
-    degrees = [val for (node, val) in G.degree()]
+    node_ordering = []
+    for node in G.nodes():
+        print(node)
+        node_ordering.append(int(node))
+    # G = nx.convert_node_labels_to_integers(G)
+    degree_tuple = G.degree()
+    print(G.degree())
+    # degree_tuple= sorted(G.degree(), key=lambda tup: int(tup[0]))
+    print(degree_tuple)
+    degrees = [val for (node, val) in degree_tuple]
     # g = dgl.from_networkx(G)
     one_hot_feature = F.one_hot(torch.IntTensor(degrees).to(torch.int64))
     print(one_hot_feature.shape)
     A = nx.adjacency_matrix(G)
     feature = sp.csr_matrix(one_hot_feature.to(torch.float).numpy())
-    return A, feature
+    return A, feature, node_ordering
+
+def load_intro_data():
+    G = nx.read_gpickle("data/intro.gpickle")
+    node_ordering = []
+    for node in G.nodes():
+        print(node)
+        node_ordering.append(int(node))
+    # G = nx.convert_node_labels_to_integers(G)
+    degree_tuple = G.degree()
+    print(G.degree())
+    # degree_tuple= sorted(G.degree(), key=lambda tup: int(tup[0]))
+    print(degree_tuple)
+    # degrees = [val for (node, val) in degree_tuple]
+    # g = dgl.from_networkx(G)
+    # one_hot_feature = F.one_hot(torch.IntTensor(degrees).to(torch.int64))
+    attrs = []
+    for node in node_ordering:
+        attrs.append(G.nodes[node]["attr"])
+    A = nx.adjacency_matrix(G)
+    feature = sp.csr_matrix(np.array(attrs, dtype=np.float32))
+    return A, feature, node_ordering
 
 def _sample_mask(idx, l):
     """Create mask."""
@@ -348,12 +378,18 @@ def read_real_datasets(datasets):
         node_lines = node_feature_file.readlines()[1:]
         feature_list = []
         labels = []
+        max_len = 0
         for node_line in node_lines:
             node_id, feature, label = node_line.split("\t")
             labels.append(int(label))
             features = feature.split(",")
+            max_len = max(len(features), max_len)
             feature_list.append([float(feature) for feature in features])
-        feature_array = np.array(feature_list)
+        feature_pad_list = []
+        for features in feature_list:
+            features += [0] * (max_len - len(features))
+            feature_pad_list.append(features)
+        feature_array = np.array(feature_pad_list)
         features = torch.from_numpy(feature_array)
         features = sp.csr_matrix(features)
         # g.ndata['attr'] = features.float()

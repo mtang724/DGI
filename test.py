@@ -16,6 +16,7 @@ import pandas as pd
 from layers import mlp
 from utils import process
 from torch.utils.data import Dataset
+import statistics
 
 class NodeClassificationDataset(Dataset):
     def __init__(self, node_embeddings, labels):
@@ -34,7 +35,7 @@ def read_roleid(path_to_file):
     with open(path_to_file) as f:
         contents = f.readlines()
         for content in contents:
-            role_id.append(int(content))
+            role_id.append(float(content))
     return role_id
 
 def cluster_graph(role_id, node_embeddings):
@@ -117,23 +118,27 @@ def evaluate(model, embeddings, labels, mask):
 
 
 def train_real_datasets(emb, node_labels):
+    device = torch.device("cpu" if torch.cuda.is_available() else "cpu")
     print(emb.shape)
     class_number = int(max(node_labels)) + 1
     input_dims = emb.shape
-    FNN = mlp.MLP(num_layers=5, input_dim=input_dims[1], hidden_dim=input_dims[1] // 2, output_dim=class_number).cuda()
+    FNN = mlp.MLP(num_layers=5, input_dim=input_dims[1], hidden_dim=input_dims[1] // 2, output_dim=class_number).to(device)
     criterion = torch.nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(FNN.parameters())
     dataset = NodeClassificationDataset(emb, node_labels)
     split = process.DataSplit(dataset, shuffle=True)
     train_loader, val_loader, test_loader = split.get_split(batch_size=64, num_workers=0)
+    print(len(train_loader.dataset))
+    print(len(node_labels), emb.shape)
     # train_loader = DataLoader(dataset=dataset, batch_size=32, shuffle=True)
     best = float('inf')
     for epoch in range(100):
         for i, data in enumerate(train_loader, 0):
+            print("here")
             # data = data.to(device)
             inputs, labels = data
-            inputs = inputs.cuda()
-            labels = labels.cuda()
+            inputs = inputs.to(device)
+            labels = labels.to(device)
             y_pred = FNN(inputs)
             loss = criterion(y_pred, labels)
             print(epoch, i, loss.item())
@@ -146,8 +151,8 @@ def train_real_datasets(emb, node_labels):
                 total = 0
                 for data in val_loader:
                     inputs, labels = data
-                    inputs = inputs.cuda()
-                    labels = labels.cuda()
+                    inputs = inputs.to(device)
+                    labels = labels.to(device)
                     outputs = FNN(inputs)
                     _, predicted = torch.max(outputs.data, 1)
                     loss = criterion(outputs, labels)
@@ -164,8 +169,8 @@ def train_real_datasets(emb, node_labels):
         total = 0
         for data in test_loader:
             inputs, labels = data
-            inputs = inputs.cuda()
-            labels = labels.cuda()
+            inputs = inputs.to(device)
+            labels = labels.to(device)
             outputs = FNN(inputs)
             _, predicted = torch.max(outputs.data, 1)
             total += labels.size(0)
@@ -173,114 +178,140 @@ def train_real_datasets(emb, node_labels):
     print((correct / total).item())
     return (correct / total).item()
 
-dataset = 'pubmed'
-
+dataset = 'cora'
+def Average(lst):
+    return sum(lst) / len(lst)
 # training params
 batch_size = 1
 nb_epochs = 10000
 patience = 20
-lr = 0.001
+lr = 0.0001
 l2_coef = 0.0
 drop_prob = 0.0
 hid_units = 512
 sparse = True
 nonlinearity = 'prelu'  # special name to separate parameters
+device = torch.device("cpu" if torch.cuda.is_available() else "cpu")
 
-adj, features, labels, idx_train, idx_val, idx_test = process.load_real_data(dataset)
-# adj, features, labels = process.read_real_datasets("wisconsin")
-# adj, features = process.load_synthetic_data(dataset)
-features, _ = process.preprocess_features(features)
+# adj, features, labels, idx_train, idx_val, idx_test = process.load_real_data(dataset)
+# adj, features, labels = process.read_real_datasets("film")
+homs, comps, amis, nb_clusts, chs, sils = [], [], [], [], [],[]
+acc = []
+for i in range(10):
+    # adj, features, node_ordering = process.load_synthetic_data(dataset + str(i))
+    adj, features, labels, idx_train, idx_val, idx_test = process.load_real_data(dataset)
+    # adj, features, node_ordering = process.load_intro_data()
+    features, _ = process.preprocess_features(features)
 
-nb_nodes = features.shape[0]
-ft_size = features.shape[1]
-# nb_classes = labels.shape[1]
+    nb_nodes = features.shape[0]
+    ft_size = features.shape[1]
+    hid_units = features.shape[1]
+    # nb_classes = labels.shape[1]
 
-adj = process.normalize_adj(adj + sp.eye(adj.shape[0]))
+    adj = process.normalize_adj(adj + sp.eye(adj.shape[0]))
 
-if sparse:
-    sp_adj = process.sparse_mx_to_torch_sparse_tensor(adj)
-else:
-    adj = (adj + sp.eye(adj.shape[0])).todense()
+    if sparse:
+        sp_adj = process.sparse_mx_to_torch_sparse_tensor(adj)
+    else:
+        adj = (adj + sp.eye(adj.shape[0])).todense()
 
-features = torch.FloatTensor(features[np.newaxis])
-if not sparse:
-    adj = torch.FloatTensor(adj[np.newaxis])
-# labels = torch.FloatTensor(labels[np.newaxis])
-# idx_train = torch.LongTensor(idx_train)
-# idx_val = torch.LongTensor(idx_val)
-# idx_test = torch.LongTensor(idx_test)
+    features = torch.FloatTensor(features[np.newaxis])
+    if not sparse:
+        adj = torch.FloatTensor(adj[np.newaxis])
+    # labels = torch.FloatTensor(labels[np.newaxis])
+    # idx_train = torch.LongTensor(idx_train)
+    # idx_val = torch.LongTensor(idx_val)
+    # idx_test = torch.LongTensor(idx_test)
 
-model = DGI(ft_size, hid_units, nonlinearity)
-optimiser = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=l2_coef)
-
-# if torch.cuda.is_available():
-#     print('Using CUDA')
-#     model.cuda()
-#     features = features.cuda()
-#     if sparse:
-#         sp_adj = sp_adj.cuda()
-#     else:
-#         adj = adj.cuda()
-    # labels = labels.cuda()
-    # idx_train = idx_train.cuda()
-    # idx_val = idx_val.cuda()
-    # idx_test = idx_test.cuda()
-
-b_xent = nn.BCEWithLogitsLoss()
-xent = nn.CrossEntropyLoss()
-cnt_wait = 0
-best = 1e9
-best_t = 0
-
-for epoch in range(nb_epochs):
-    model.train()
-    optimiser.zero_grad()
-
-    idx = np.random.permutation(nb_nodes)
-    shuf_fts = features[:, idx, :]
-
-    lbl_1 = torch.ones(batch_size, nb_nodes)
-    lbl_2 = torch.zeros(batch_size, nb_nodes)
-    lbl = torch.cat((lbl_1, lbl_2), 1)
+    model = DGI(ft_size, hid_units, nonlinearity)
+    optimiser = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=l2_coef)
 
     # if torch.cuda.is_available():
-    #     shuf_fts = shuf_fts.cuda()
-    #     lbl = lbl.cuda()
+    #     print('Using CUDA')
+    #     model.to(device)
+    #     features = features.to(device)
+    #     if sparse:
+    #         sp_adj = sp_adj.to(device)
+    #     else:
+    #         adj = adj.to(device)
+        # labels = labels.to(device)
+        # idx_train = idx_train.to(device)
+        # idx_val = idx_val.to(device)
+        # idx_test = idx_test.to(device)
 
-    logits = model(features, shuf_fts, sp_adj if sparse else adj, sparse, None, None, None)
+    b_xent = nn.BCEWithLogitsLoss()
+    xent = nn.CrossEntropyLoss()
+    cnt_wait = 0
+    best = 1e9
+    best_t = 0
 
-    loss = b_xent(logits, lbl)
+    for epoch in range(nb_epochs):
+        model.train()
+        optimiser.zero_grad()
 
-    print('Loss:', loss)
+        idx = np.random.permutation(nb_nodes)
+        shuf_fts = features[:, idx, :]
 
-    if loss < best:
-        best = loss
-        best_t = epoch
-        cnt_wait = 0
-        torch.save(model.state_dict(), 'best_dgi.pkl')
-    else:
-        cnt_wait += 1
+        lbl_1 = torch.ones(batch_size, nb_nodes)
+        lbl_2 = torch.zeros(batch_size, nb_nodes)
+        lbl = torch.cat((lbl_1, lbl_2), 1)
 
-    if cnt_wait == patience:
-        print('Early stopping!')
-        break
+        # if torch.cuda.is_available():
+        #     shuf_fts = shuf_fts.to(device)
+        #     lbl = lbl.to(device)
 
-    loss.backward()
-    optimiser.step()
+        logits = model(features, shuf_fts, sp_adj if sparse else adj, sparse, None, None, None)
 
-print('Loading {}th epoch'.format(best_t))
-model.load_state_dict(torch.load('best_dgi.pkl'))
+        loss = b_xent(logits, lbl)
 
-embeds, _ = model.embed(features, sp_adj if sparse else adj, sparse, None)
-emb = torch.squeeze(embeds.detach(), dim=0)
-acc = 0
-for i in range(10):
-    acc += train_real_datasets(emb, labels)
-print (acc/10)
-# role_id = read_roleid("{}.roleid".format(dataset))
-# role_id_num = len(set(role_id))
-# embeddings = torch.squeeze(embeds.cpu().detach())
-# print(embeddings.shape)
-# labels_pred, colors, trans_data, nb_clust = cluster_graph(role_id, embeddings)
-# draw_pca(role_id, embeddings)
-# hom, comp, ami, nb_clust, ch, sil = unsupervised_evaluate(colors, labels_pred, trans_data, nb_clust)
+        print('Loss:', loss)
+
+        if loss < best:
+            best = loss
+            best_t = epoch
+            cnt_wait = 0
+            torch.save(model.state_dict(), 'best_dgi.pkl')
+        else:
+            cnt_wait += 1
+
+        if cnt_wait == patience:
+            print('Early stopping!')
+            break
+
+        loss.backward()
+        optimiser.step()
+
+    print('Loading {}th epoch'.format(best_t))
+    model.load_state_dict(torch.load('best_dgi.pkl'))
+
+    embeds0, embeds1, embeds2, embeds3, _ = model.embed(features, sp_adj if sparse else adj, sparse, None)
+    embeddings = torch.squeeze(embeds3.cpu().detach())
+    acc.append(train_real_datasets(embeddings, labels))
+
+print("mean:")
+print(statistics.mean(acc))
+print("std:")
+print(statistics.stdev(acc))
+    # emb = torch.squeeze(embeds.detach(), dim=0)
+    # acc = 0
+    # for i in range(10):
+    #     acc += train_real_datasets(emb, labels)
+    # print (acc/10)
+    # role_id = read_roleid("C://Users/Ming/Desktop/DGI/synthetic/np_{}{}.txt".format(dataset, i))
+#     role_id = np.loadtxt("data/intro.out")
+#     role_id = [role_id[i] for i in node_ordering]
+#     # role_id = np.loadtxt("C://Users/Ming/Desktop/DGI/synthetic/np_{}{}.txt".format(dataset, i))
+#     role_id_num = len(set(role_id))
+#
+#     embeddings = torch.squeeze(embeds3.cpu().detach())
+#     print(embeddings.shape)
+#     labels_pred, colors, trans_data, nb_clust = cluster_graph(role_id, embeddings)
+#     draw_pca(role_id, embeddings)
+#
+#     hom, comp, ami, nb_clust, ch, sil = unsupervised_evaluate(colors, labels_pred, trans_data, nb_clust)
+#     homs.append(hom)
+#     comps.append(comp)
+#     sils.append(sil)
+#     print(hom, comp, sil)
+# print(Average(homs), Average(comps), Average(sils))
+
