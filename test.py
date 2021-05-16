@@ -178,7 +178,9 @@ def train_real_datasets(emb, node_labels):
     print((correct / total).item())
     return (correct / total).item()
 
-dataset = 'cora'
+import sys
+dataset_str = sys.argv[1]
+
 def Average(lst):
     return sum(lst) / len(lst)
 # training params
@@ -193,19 +195,21 @@ sparse = True
 nonlinearity = 'prelu'  # special name to separate parameters
 device = torch.device("cpu" if torch.cuda.is_available() else "cpu")
 
-# adj, features, labels, idx_train, idx_val, idx_test = process.load_real_data(dataset)
-# adj, features, labels = process.read_real_datasets("film")
+if dataset_str == "cora" or dataset_str == "citeseer" or dataset_str == "pubmed":
+    adj, features, labels, idx_train, idx_val, idx_test = process.load_real_data(dataset_str)
+else:
+    adj, features, labels = process.read_real_datasets(dataset_str)
 homs, comps, amis, nb_clusts, chs, sils = [], [], [], [], [],[]
+features, _ = process.preprocess_features(features)
 acc = []
-for i in range(10):
+for i in range(5):
     # adj, features, node_ordering = process.load_synthetic_data(dataset + str(i))
-    adj, features, labels, idx_train, idx_val, idx_test = process.load_real_data(dataset)
+    # adj, features, labels, idx_train, idx_val, idx_test = process.load_real_data(dataset_str)
     # adj, features, node_ordering = process.load_intro_data()
-    features, _ = process.preprocess_features(features)
 
     nb_nodes = features.shape[0]
     ft_size = features.shape[1]
-    hid_units = features.shape[1]
+    # hid_units = features.shape[1]
     # nb_classes = labels.shape[1]
 
     adj = process.normalize_adj(adj + sp.eye(adj.shape[0]))
@@ -226,14 +230,14 @@ for i in range(10):
     model = DGI(ft_size, hid_units, nonlinearity)
     optimiser = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=l2_coef)
 
-    # if torch.cuda.is_available():
-    #     print('Using CUDA')
-    #     model.to(device)
-    #     features = features.to(device)
-    #     if sparse:
-    #         sp_adj = sp_adj.to(device)
-    #     else:
-    #         adj = adj.to(device)
+    if torch.cuda.is_available():
+        print('Using CUDA')
+        model.to(device)
+        features = features.to(device)
+        if sparse:
+            sp_adj = sp_adj.to(device)
+        else:
+            adj = adj.to(device)
         # labels = labels.to(device)
         # idx_train = idx_train.to(device)
         # idx_val = idx_val.to(device)
@@ -256,9 +260,9 @@ for i in range(10):
         lbl_2 = torch.zeros(batch_size, nb_nodes)
         lbl = torch.cat((lbl_1, lbl_2), 1)
 
-        # if torch.cuda.is_available():
-        #     shuf_fts = shuf_fts.to(device)
-        #     lbl = lbl.to(device)
+        if torch.cuda.is_available():
+            shuf_fts = shuf_fts.to(device)
+            lbl = lbl.to(device)
 
         logits = model(features, shuf_fts, sp_adj if sparse else adj, sparse, None, None, None)
 
@@ -284,7 +288,7 @@ for i in range(10):
     print('Loading {}th epoch'.format(best_t))
     model.load_state_dict(torch.load('best_dgi.pkl'))
 
-    embeds0, embeds1, embeds2, embeds3, _ = model.embed(features, sp_adj if sparse else adj, sparse, None)
+    embeds0, embeds3, _, _, _ = model.embed(features, sp_adj if sparse else adj, sparse, None)
     embeddings = torch.squeeze(embeds3.cpu().detach())
     acc.append(train_real_datasets(embeddings, labels))
 
