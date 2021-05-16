@@ -194,6 +194,8 @@ hid_units = 512
 sparse = True
 nonlinearity = 'prelu'  # special name to separate parameters
 device = torch.device("cpu" if torch.cuda.is_available() else "cpu")
+with open("out_{}.txt".format(dataset_str), "a") as myfile:
+    myfile.write("-----start-----\n")
 
 if dataset_str == "cora" or dataset_str == "citeseer" or dataset_str == "pubmed":
     adj, features, labels, idx_train, idx_val, idx_test = process.load_real_data(dataset_str)
@@ -202,7 +204,7 @@ else:
 homs, comps, amis, nb_clusts, chs, sils = [], [], [], [], [],[]
 features, _ = process.preprocess_features(features)
 acc = []
-for i in range(5):
+for index in range(5):
     # adj, features, node_ordering = process.load_synthetic_data(dataset + str(i))
     # adj, features, labels, idx_train, idx_val, idx_test = process.load_real_data(dataset_str)
     # adj, features, node_ordering = process.load_intro_data()
@@ -290,12 +292,18 @@ for i in range(5):
 
     embeds0, embeds3, _, _, _ = model.embed(features, sp_adj if sparse else adj, sparse, None)
     embeddings = torch.squeeze(embeds3.cpu().detach())
-    acc.append(train_real_datasets(embeddings, labels))
+    result = train_real_datasets(embeddings, labels)
+    acc.append(result)
+    with open("out_{}.txt".format(dataset_str), "a") as myfile:
+        myfile.write("round{}: {}\n".format(index, result))
 
 print("mean:")
 print(statistics.mean(acc))
 print("std:")
 print(statistics.stdev(acc))
+with open("out_{}.txt".format(dataset_str), "a") as myfile:
+    myfile.write("mean:{}\n".format(statistics.mean(acc)))
+    myfile.write("std:{}\n".format(statistics.stdev(acc)))
     # emb = torch.squeeze(embeds.detach(), dim=0)
     # acc = 0
     # for i in range(10):
